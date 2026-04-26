@@ -19,26 +19,19 @@ CONFIRM_TIMEOUT = 1800  # 30 min to press "Next" before skipping
 # Specific phrases matched against job TITLE only (avoids noise from descriptions)
 KEYWORDS = [
     # Writing
-    "content writer", "content writing",
-    "blog writer", "blog writing", "blog post",
     "article writer", "article writing",
-    "copywriter", "copywriting",
-    "freelance writer", "freelance writing",
-    "technical writer", "technical writing",
-    "seo writer", "seo writing", "seo content",
-    "ghostwriter", "ghost writer",
-    "proofreader", "proofreading",
-    "rewriting", "rewrite",
+    "blog post",
+    "content writer", "content writing",
     # Data work
-    "data entry", "data collection",
-    "web research", "web scraping",
+    "data entry",
+    "web research",
     # Spreadsheets
-    "excel specialist", "google sheets specialist", "spreadsheet",
+    "excel spreadsheet",
+    "google sheets",
     # Python / automation
-    "python automation", "python script", "automation script",
-    # Translation
-    "translator", "translation specialist", "localization specialist",
-    "localization manager",
+    "python automation",
+    # Translation (freelance tasks only, no localization/full-time roles)
+    "translation",
 ]
 
 MIN_BUDGET = 20
