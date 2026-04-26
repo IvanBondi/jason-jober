@@ -41,22 +41,26 @@ KEYWORDS = [
 
 MIN_BUDGET = 20
 
-# RSS фіди — Upwork removed RSS (410), Freelancer RSS returns HTML
+# Live RSS feeds verified 2026-04-26 — dead feeds removed
 RSS_FEEDS = {
     "RemoteOK": [
         "https://remoteok.com/remote-jobs.rss",
         "https://remoteok.com/remote-content-jobs.rss",
         "https://remoteok.com/remote-python-jobs.rss",
+        "https://remoteok.com/remote-writing-jobs.rss",
     ],
     "WeWorkRemotely": [
         "https://weworkremotely.com/remote-jobs.rss",
-        "https://weworkremotely.com/categories/remote-programming-jobs.rss",
-    ],
-    "Jobicy": [
-        "https://jobicy.com/?feed=job_feed",
     ],
     "Remotive": [
         "https://remotive.com/remote-jobs/feed",
+        "https://remotive.com/remote-jobs/feed/writing",
+    ],
+    "HubstaffTalent": [
+        "https://talent.hubstaff.com/feeds/jobs.rss",
+    ],
+    "Jobicy": [
+        "https://jobicy.com/?feed=job_feed",
     ],
 }
 
@@ -380,6 +384,7 @@ def collect_relevant_jobs():
                 response = requests.get(feed_url, headers=FETCH_HEADERS, timeout=20, allow_redirects=True)
                 response.raise_for_status()
                 feed = feedparser.parse(response.content)
+                matched = 0
                 for entry in feed.entries:
                     job_id = entry.get("id") or entry.get("link", "")
                     if not job_id or is_seen(job_id):
@@ -387,10 +392,12 @@ def collect_relevant_jobs():
                     relevant, keyword, budget = is_relevant(entry, source)
                     if relevant:
                         pending.append((entry, source, keyword, budget, job_id))
+                        matched += 1
                     else:
                         mark_seen(job_id)
+                print(f"  [{source}] {feed_url.split('/')[-1] or feed_url}: {len(feed.entries)} entries, {matched} new matches")
             except Exception as e:
-                print(f"Error parsing {feed_url}: {e}")
+                print(f"  [{source}] ERROR: {e}")
     return pending
 
 def send_in_batches(pending):
