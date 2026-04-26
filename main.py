@@ -33,9 +33,11 @@ KEYWORDS = [
     "article writer", "article writing",
     "blog post",
     "content writer", "content writing",
+    "technical writer", "technical writing",
     # Data work
     "data entry",
     "web research",
+    "web scraping",
     # Spreadsheets
     "excel spreadsheet",
     "google sheets",
