@@ -10,10 +10,14 @@ from datetime import datetime
 
 try:
     from google.oauth2 import service_account
+    from google.oauth2.credentials import Credentials
+    from google.auth.transport.requests import Request as GoogleRequest
     from googleapiclient.discovery import build as gapi_build
-    SHEETS_AVAILABLE = True
+    from bs4 import BeautifulSoup
+    import base64
+    GOOGLE_AVAILABLE = True
 except ImportError:
-    SHEETS_AVAILABLE = False
+    GOOGLE_AVAILABLE = False
 
 # ============================================================
 # CONFIGURATION
@@ -23,6 +27,10 @@ CHAT_ID = os.environ.get("CHAT_ID", "YOUR_CHAT_ID")
 GOOGLE_CREDENTIALS_JSON = os.environ.get("GOOGLE_CREDENTIALS_JSON")
 GOOGLE_SHEET_ID = os.environ.get("GOOGLE_SHEET_ID", "1HO22ANItDntqzK4oM2bQAQHsAk0qUITxP-ND1wJqhic")
 _CREDENTIALS_FILE = os.path.join(os.path.dirname(__file__), "lucky-wonder-494514-b0-a80366374894.json")
+GMAIL_TOKEN_JSON = os.environ.get("GMAIL_TOKEN_JSON")
+_GMAIL_TOKEN_FILE = os.path.join(os.path.dirname(__file__), "token_gmail.json")
+GMAIL_LABEL = "Upwork_Jobs"
+GMAIL_SCOPES = ["https://www.googleapis.com/auth/gmail.modify"]
 CHECK_INTERVAL = 300  # 5 minutes
 BATCH_SIZE = 5
 CONFIRM_TIMEOUT = 1800  # 30 min to press "Next" before skipping
@@ -134,7 +142,7 @@ def _sheets_service():
     return gapi_build("sheets", "v4", credentials=creds)
 
 def _sheets_configured():
-    return SHEETS_AVAILABLE and (os.path.exists(_CREDENTIALS_FILE) or GOOGLE_CREDENTIALS_JSON) and GOOGLE_SHEET_ID
+    return GOOGLE_AVAILABLE and (os.path.exists(_CREDENTIALS_FILE) or GOOGLE_CREDENTIALS_JSON) and GOOGLE_SHEET_ID
 
 def ensure_sheet_headers():
     if not _sheets_configured():
@@ -182,6 +190,173 @@ def log_to_sheets(job_data):
         print(f"Sheets error: {e}")
         send_telegram(f"⚠️ Failed to log to Google Sheets: {e}")
         return False
+
+# ============================================================
+# GMAIL — Upwork job alert monitoring
+# ============================================================
+def _gmail_creds():
+    """Load OAuth credentials from file or env var, refreshing if expired."""
+    raw = None
+    if os.path.exists(_GMAIL_TOKEN_FILE):
+        with open(_GMAIL_TOKEN_FILE) as f:
+            raw = json.load(f)
+    elif GMAIL_TOKEN_JSON:
+        raw = json.loads(GMAIL_TOKEN_JSON)
+    if not raw:
+        return None
+    creds = Credentials.from_authorized_user_info(raw, GMAIL_SCOPES)
+    if creds.expired and creds.refresh_token:
+        creds.refresh(GoogleRequest())
+        # Persist refreshed token locally if file exists
+        if os.path.exists(_GMAIL_TOKEN_FILE):
+            with open(_GMAIL_TOKEN_FILE, "w") as f:
+                f.write(creds.to_json())
+    return creds
+
+def _gmail_service():
+    creds = _gmail_creds()
+    if not creds:
+        return None
+    return gapi_build("gmail", "v1", credentials=creds)
+
+def _get_email_body(payload):
+    """Recursively extract HTML body from a Gmail message payload."""
+    if payload.get("mimeType") == "text/html":
+        data = payload.get("body", {}).get("data", "")
+        if data:
+            return base64.urlsafe_b64decode(data).decode("utf-8", errors="replace")
+    for part in payload.get("parts", []):
+        result = _get_email_body(part)
+        if result:
+            return result
+    return ""
+
+def parse_upwork_email(html):
+    """
+    Parse an Upwork job alert email and return a list of job dicts:
+    {title, link, budget, description}
+    """
+    soup = BeautifulSoup(html, "html.parser")
+    jobs = []
+
+    # Upwork alert emails wrap each job in a table row / div containing a link
+    # to upwork.com/jobs/ or upwork.com/ab/proposals/
+    for a in soup.find_all("a", href=True):
+        href = a["href"]
+        # Job links contain /jobs/ or /nx/proposals/job-details/
+        if "upwork.com" not in href:
+            continue
+        if "/jobs/" not in href and "/proposals/" not in href:
+            continue
+
+        title = a.get_text(strip=True)
+        if len(title) < 8:          # skip short nav links
+            continue
+        if title.lower() in ("view job", "apply now", "see more jobs", "view all jobs"):
+            continue
+
+        # Budget: look in surrounding container (parent td/div, siblings)
+        budget = None
+        container = a.find_parent(["td", "div", "tr"])
+        if container:
+            text = container.get_text(" ", strip=True)
+            budget = extract_budget(text)
+
+        # Short description: first non-empty text block near the title
+        description = ""
+        if container:
+            chunks = [t.strip() for t in container.stripped_strings if len(t.strip()) > 20]
+            # Skip the title itself
+            desc_chunks = [c for c in chunks if c != title][:2]
+            description = " ".join(desc_chunks)[:300]
+
+        jobs.append({
+            "title": title,
+            "link": href,
+            "budget": budget,
+            "description": description,
+        })
+
+    # Deduplicate by link
+    seen_links = set()
+    unique = []
+    for j in jobs:
+        if j["link"] not in seen_links:
+            seen_links.add(j["link"])
+            unique.append(j)
+    return unique
+
+def check_gmail():
+    """
+    Fetch unread Upwork job alert emails, parse jobs, return
+    list of (entry_dict, source, keyword, budget, job_id) tuples
+    — same shape as collect_relevant_jobs().
+    """
+    if not GOOGLE_AVAILABLE:
+        return []
+    svc = _gmail_service()
+    if not svc:
+        print("  [Gmail] not configured — skipping")
+        return []
+
+    try:
+        # Find the label ID
+        labels_resp = svc.users().labels().list(userId="me").execute()
+        label = next(
+            (l for l in labels_resp.get("labels", []) if l["name"] == GMAIL_LABEL),
+            None,
+        )
+        if not label:
+            print(f"  [Gmail] label '{GMAIL_LABEL}' not found")
+            return []
+
+        # Fetch unread messages in that label
+        result = svc.users().messages().list(
+            userId="me",
+            labelIds=[label["id"], "UNREAD"],
+            maxResults=20,
+        ).execute()
+        messages = result.get("messages", [])
+        print(f"  [Gmail] {len(messages)} unread messages in {GMAIL_LABEL}")
+
+        pending = []
+        for msg_meta in messages:
+            msg_id = msg_meta["id"]
+            gmail_job_id = f"gmail:{msg_id}"
+            if is_seen(gmail_job_id):
+                continue
+
+            detail = svc.users().messages().get(
+                userId="me", id=msg_id, format="full"
+            ).execute()
+            html = _get_email_body(detail["payload"])
+            jobs = parse_upwork_email(html)
+            print(f"  [Gmail] msg {msg_id}: found {len(jobs)} jobs")
+
+            for job in jobs:
+                job_url_id = f"gmail:{msg_id}:{job['link']}"
+                if is_seen(job_url_id):
+                    continue
+                # Build a fake entry dict matching format_job_message expectations
+                entry = {
+                    "title": job["title"],
+                    "link":  job["link"],
+                    "summary": job["description"],
+                }
+                pending.append((entry, "Upwork", job["title"], job["budget"], job_url_id))
+
+            # Mark email as read
+            svc.users().messages().modify(
+                userId="me", id=msg_id,
+                body={"removeLabelIds": ["UNREAD"]},
+            ).execute()
+            mark_seen(gmail_job_id)
+
+        return pending
+
+    except Exception as e:
+        print(f"  [Gmail] ERROR: {e}")
+        return []
 
 # ============================================================
 # FILTERING — title keyword match only, no exclusions
@@ -453,8 +628,9 @@ def send_in_batches(pending):
 
     return sent
 
-def check_feeds():
+def check_all():
     pending = collect_relevant_jobs()
+    pending += check_gmail()
     if not pending:
         return 0
     print(f"Found {len(pending)} relevant jobs, sending in batches of {BATCH_SIZE}")
@@ -480,19 +656,21 @@ def main():
 
     sheets_status = "✅ Google Sheets connected" if _sheets_configured() else "⚠️ Google Sheets not configured"
 
+    gmail_status = "✅ Gmail connected" if (os.path.exists(_GMAIL_TOKEN_FILE) or GMAIL_TOKEN_JSON) else "⚠️ Gmail not configured"
     send_telegram(
         "🤖 <b>Jason Jober is online!</b>\n\n"
-        "Monitoring jobs on RemoteOK, WeWorkRemotely, Jobicy & Remotive...\n\n"
+        "Monitoring RSS feeds + Gmail Upwork_Jobs label...\n\n"
         "🔍 Categories: Writing, Data Entry, Spreadsheets, Python, Translation\n"
         "📦 Jobs sent in batches of 5 — press Next to load more.\n"
-        f"📊 {sheets_status}\n\n"
+        f"📊 {sheets_status}\n"
+        f"📧 {gmail_status}\n\n"
         "<i>Reply <b>take</b> to any job to log it to Google Sheets</i>"
     )
     print("✅ Jason Jober is running!")
 
     while True:
-        print(f"\n⏰ Checking feeds... {datetime.now().strftime('%H:%M:%S')}")
-        new_jobs = check_feeds()
+        print(f"\n⏰ Checking feeds + Gmail... {datetime.now().strftime('%H:%M:%S')}")
+        new_jobs = check_all()
         print(f"📊 Found {new_jobs} new relevant jobs")
         print(f"💤 Sleeping for {CHECK_INTERVAL // 60} minutes...")
         sleep_with_polling(CHECK_INTERVAL)
