@@ -29,28 +29,13 @@ CONFIRM_TIMEOUT = 1800  # 30 min to press "Next" before skipping
 
 # Specific phrases matched against job TITLE only (avoids noise from descriptions)
 KEYWORDS = [
-    # Writing (broad)
     "writer", "writing", "content",
-    "copywriter", "copywriting",
-    "article writer", "article writing",
-    "blog post",
-    "content writer", "content writing",
-    "technical writer", "technical writing",
-    # Data work
     "data entry",
-    "researcher",
-    "web research",
-    "web scraping", "scraping",
-    # Spreadsheets
-    "spreadsheet",
-    "excel spreadsheet",
-    "google sheets",
-    # Python / automation
-    "python", "python automation",
-    # Translation
-    "translator", "translation",
-    # Catch-all freelance signal
-    "remote freelance",
+    "research",
+    "translation",
+    "excel",
+    "python",
+    "scraping",
 ]
 
 MIN_BUDGET = 20
@@ -192,18 +177,8 @@ def log_to_sheets(job_data):
         return False
 
 # ============================================================
-# FILTERING — title match + full-time exclusion on title+summary
+# FILTERING — title keyword match only, no exclusions
 # ============================================================
-
-# Unambiguous full-time employment phrases — reject on any match
-EXCLUDE_TERMS = [
-    "full-time employee",
-    "annual salary",
-    "health benefits",
-    "401k",
-    "equity",
-]
-
 def extract_budget(text):
     patterns = [
         r'\$(\d+(?:,\d+)?(?:\.\d+)?)',
@@ -223,18 +198,10 @@ def matches_keywords(title):
             return keyword
     return None
 
-def is_not_fulltime(title, summary):
-    text = (title + " " + (summary or "")).lower()
-    return not any(term in text for term in EXCLUDE_TERMS)
-
 def is_relevant(entry, source):
     title = entry.get("title", "")
-    matched_keyword = matches_keywords(title)  # title only
+    matched_keyword = matches_keywords(title)
     if not matched_keyword:
-        return False, None, None
-
-    summary = entry.get("summary", "")
-    if not is_not_fulltime(title, summary):
         return False, None, None
 
     budget = extract_budget(summary)
