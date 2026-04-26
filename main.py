@@ -384,18 +384,22 @@ def collect_relevant_jobs():
                 response = requests.get(feed_url, headers=FETCH_HEADERS, timeout=20, allow_redirects=True)
                 response.raise_for_status()
                 feed = feedparser.parse(response.content)
+                print(f"  [{source}] {len(feed.entries)} entries from {feed_url}")
                 matched = 0
                 for entry in feed.entries:
+                    title = entry.get("title", "(no title)")
                     job_id = entry.get("id") or entry.get("link", "")
+                    print(f"    RAW: {title}")
                     if not job_id or is_seen(job_id):
                         continue
                     relevant, keyword, budget = is_relevant(entry, source)
                     if relevant:
+                        print(f"    >>> MATCH [{keyword}]: {title}")
                         pending.append((entry, source, keyword, budget, job_id))
                         matched += 1
                     else:
                         mark_seen(job_id)
-                print(f"  [{source}] {feed_url.split('/')[-1] or feed_url}: {len(feed.entries)} entries, {matched} new matches")
+                print(f"  [{source}] {matched} new matches")
             except Exception as e:
                 print(f"  [{source}] ERROR: {e}")
     return pending
