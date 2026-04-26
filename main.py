@@ -5,14 +5,24 @@ import sys
 import time
 import os
 import re
+import json
 from datetime import datetime
 
+try:
+    from google.oauth2 import service_account
+    from googleapiclient.discovery import build as gapi_build
+    SHEETS_AVAILABLE = True
+except ImportError:
+    SHEETS_AVAILABLE = False
+
 # ============================================================
-# КОНФІГУРАЦІЯ JASON JOBER
+# CONFIGURATION
 # ============================================================
 TELEGRAM_TOKEN = os.environ.get("TELEGRAM_TOKEN", "YOUR_TOKEN")
 CHAT_ID = os.environ.get("CHAT_ID", "YOUR_CHAT_ID")
-CHECK_INTERVAL = 300  # перевіряти кожні 5 хвилин
+GOOGLE_CREDENTIALS_JSON = os.environ.get("GOOGLE_CREDENTIALS_JSON")
+GOOGLE_SHEET_ID = os.environ.get("GOOGLE_SHEET_ID")
+CHECK_INTERVAL = 300  # 5 minutes
 BATCH_SIZE = 5
 CONFIRM_TIMEOUT = 1800  # 30 min to press "Next" before skipping
 
@@ -56,7 +66,16 @@ RSS_FEEDS = {
 }
 
 # ============================================================
-# БАЗА ДАНИХ
+# GLOBAL TELEGRAM STATE
+# ============================================================
+tg_offset = None
+
+# message_id -> {title, source, budget, link, keyword}
+# Populated when a job is sent; consumed when user replies "take"
+pending_takes = {}
+
+# ============================================================
+# DATABASE
 # ============================================================
 def init_db():
     conn = sqlite3.connect("jason_jobs.db")
@@ -93,7 +112,69 @@ def mark_seen_bulk(job_ids):
     conn.close()
 
 # ============================================================
-# ФІЛЬТРАЦІЯ — title only
+# GOOGLE SHEETS
+# ============================================================
+SHEET_HEADERS = ["Date", "Platform", "Job Title", "Budget", "Status", "Link"]
+
+def _sheets_service():
+    creds = service_account.Credentials.from_service_account_info(
+        json.loads(GOOGLE_CREDENTIALS_JSON),
+        scopes=["https://www.googleapis.com/auth/spreadsheets"],
+    )
+    return gapi_build("sheets", "v4", credentials=creds)
+
+def ensure_sheet_headers():
+    if not SHEETS_AVAILABLE or not GOOGLE_CREDENTIALS_JSON or not GOOGLE_SHEET_ID:
+        return
+    try:
+        svc = _sheets_service()
+        result = svc.spreadsheets().values().get(
+            spreadsheetId=GOOGLE_SHEET_ID,
+            range="Sheet1!A1:F1",
+        ).execute()
+        if not result.get("values"):
+            svc.spreadsheets().values().update(
+                spreadsheetId=GOOGLE_SHEET_ID,
+                range="Sheet1!A1:F1",
+                valueInputOption="USER_ENTERED",
+                body={"values": [SHEET_HEADERS]},
+            ).execute()
+            print("✅ Sheet headers created")
+    except Exception as e:
+        print(f"Sheets header error: {e}")
+
+def log_to_sheets(job_data):
+    if not SHEETS_AVAILABLE:
+        print("Google API libraries not installed")
+        return False
+    if not GOOGLE_CREDENTIALS_JSON or not GOOGLE_SHEET_ID:
+        print("GOOGLE_CREDENTIALS_JSON or GOOGLE_SHEET_ID not set")
+        return False
+    try:
+        svc = _sheets_service()
+        row = [
+            datetime.now().strftime("%Y-%m-%d %H:%M"),
+            job_data["source"],
+            job_data["title"],
+            f"${job_data['budget']:.0f}" if job_data.get("budget") else "",
+            "Applied",
+            job_data["link"],
+        ]
+        svc.spreadsheets().values().append(
+            spreadsheetId=GOOGLE_SHEET_ID,
+            range="Sheet1!A:F",
+            valueInputOption="USER_ENTERED",
+            body={"values": [row]},
+        ).execute()
+        print(f"✅ Sheets logged: {job_data['title'][:60]}")
+        return True
+    except Exception as e:
+        print(f"Sheets error: {e}")
+        send_telegram(f"⚠️ Failed to log to Google Sheets: {e}")
+        return False
+
+# ============================================================
+# FILTERING — title only
 # ============================================================
 def extract_budget(text):
     patterns = [
@@ -130,6 +211,7 @@ def is_relevant(entry, source):
 # TELEGRAM
 # ============================================================
 def send_telegram(message):
+    """Send a message. Returns message_id on success, None on failure."""
     url = f"https://api.telegram.org/bot{TELEGRAM_TOKEN}/sendMessage"
     payload = {
         "chat_id": CHAT_ID,
@@ -139,10 +221,12 @@ def send_telegram(message):
     }
     try:
         response = requests.post(url, json=payload, timeout=10)
-        return response.ok
+        if response.ok:
+            return response.json().get("result", {}).get("message_id")
+        return None
     except Exception as e:
         print(f"Telegram error: {e}")
-        return False
+        return None
 
 def send_telegram_with_button(message, button_label, callback_data):
     url = f"https://api.telegram.org/bot{TELEGRAM_TOKEN}/sendMessage"
@@ -172,34 +256,94 @@ def answer_callback(callback_id):
     except Exception:
         pass
 
-def wait_for_next(callback_data, timeout_seconds=CONFIRM_TIMEOUT):
-    """Long-poll for the inline button press. Returns True if user pressed Next."""
-    deadline = time.time() + timeout_seconds
-    offset = None
+# ============================================================
+# UPDATE POLLING
+# ============================================================
+def get_updates(timeout=0):
+    global tg_offset
+    params = {
+        "timeout": timeout,
+        "allowed_updates": ["callback_query", "message"],
+    }
+    if tg_offset is not None:
+        params["offset"] = tg_offset
+    try:
+        r = requests.get(
+            f"https://api.telegram.org/bot{TELEGRAM_TOKEN}/getUpdates",
+            params=params,
+            timeout=timeout + 5,
+        )
+        if not r.ok:
+            return []
+        updates = r.json().get("result", [])
+        if updates:
+            tg_offset = updates[-1]["update_id"] + 1
+        return updates
+    except Exception as e:
+        print(f"getUpdates error: {e}")
+        time.sleep(5)
+        return []
 
+def handle_take(msg):
+    """Log the job a user replied to with 'take' into Google Sheets."""
+    reply_to = msg.get("reply_to_message", {})
+    reply_msg_id = reply_to.get("message_id")
+    if not reply_msg_id or reply_msg_id not in pending_takes:
+        send_telegram(
+            "⚠️ Reply directly to a job message with <b>take</b> to log it to Google Sheets."
+        )
+        return
+    job_data = pending_takes.pop(reply_msg_id)
+    if log_to_sheets(job_data):
+        budget_str = f"${job_data['budget']:.0f}" if job_data.get("budget") else "N/A"
+        send_telegram(
+            f"✅ <b>Logged to Google Sheets!</b>\n\n"
+            f"📌 {job_data['title'][:80]}\n"
+            f"🏢 {job_data['source']} • 💰 {budget_str}"
+        )
+
+def process_updates(updates):
+    """Handle all updates. Returns list of callback_data strings seen."""
+    callbacks_seen = []
+    for update in updates:
+        cb = update.get("callback_query", {})
+        if cb:
+            callbacks_seen.append(cb.get("data", ""))
+            answer_callback(cb["id"])
+
+        msg = update.get("message", {})
+        if msg and msg.get("text", "").strip().lower() == "take":
+            handle_take(msg)
+
+    return callbacks_seen
+
+def wait_for_next(callback_data, timeout_seconds=CONFIRM_TIMEOUT):
+    """Long-poll for the inline button press, processing 'take' replies along the way."""
+    deadline = time.time() + timeout_seconds
     while time.time() < deadline:
         poll_secs = min(60, int(deadline - time.time()))
         if poll_secs <= 0:
             break
-        try:
-            r = requests.get(
-                f"https://api.telegram.org/bot{TELEGRAM_TOKEN}/getUpdates",
-                params={"timeout": poll_secs, "allowed_updates": ["callback_query"], "offset": offset},
-                timeout=poll_secs + 5,
-            )
-            if not r.ok:
-                continue
-            for update in r.json().get("result", []):
-                offset = update["update_id"] + 1
-                cb = update.get("callback_query", {})
-                if cb.get("data") == callback_data:
-                    answer_callback(cb["id"])
-                    return True
-        except Exception as e:
-            print(f"getUpdates error: {e}")
-            time.sleep(5)
-
+        updates = get_updates(timeout=poll_secs)
+        if callback_data in process_updates(updates):
+            return True
     return False
+
+def sleep_with_polling(seconds):
+    """Sleep for `seconds` while still processing incoming 'take' replies."""
+    deadline = time.time() + seconds
+    while time.time() < deadline:
+        remaining = int(deadline - time.time())
+        poll_secs = min(60, remaining)
+        if poll_secs <= 0:
+            break
+        updates = get_updates(timeout=poll_secs)
+        process_updates(updates)
+
+# ============================================================
+# JOB FORMATTING & BATCHING
+# ============================================================
+FETCH_HEADERS = {"User-Agent": "Mozilla/5.0 (compatible; feedparser/6.0)"}
 
 def format_job_message(entry, source, keyword, budget):
     title = entry.get("title", "No title")
@@ -218,13 +362,9 @@ def format_job_message(entry, source, keyword, budget):
         f"{budget_str}\n\n"
         f"📝 {clean_summary}\n\n"
         f"🔗 <a href=\"{link}\">Apply Now</a>\n"
-        f"⏰ {datetime.now().strftime('%H:%M • %d %b %Y')}"
+        f"⏰ {datetime.now().strftime('%H:%M • %d %b %Y')}\n\n"
+        f"<i>Reply <b>take</b> to log this job to Google Sheets</i>"
     )
-
-# ============================================================
-# ОСНОВНИЙ МОНІТОРИНГ
-# ============================================================
-FETCH_HEADERS = {"User-Agent": "Mozilla/5.0 (compatible; feedparser/6.0)"}
 
 def collect_relevant_jobs():
     """Fetch all feeds and return list of (entry, source, keyword, budget, job_id)."""
@@ -258,7 +398,15 @@ def send_in_batches(pending):
 
         for entry, source, keyword, budget, job_id in batch:
             message = format_job_message(entry, source, keyword, budget)
-            if send_telegram(message):
+            msg_id = send_telegram(message)
+            if msg_id:
+                pending_takes[msg_id] = {
+                    "title": entry.get("title", ""),
+                    "source": source,
+                    "budget": budget,
+                    "link": entry.get("link", ""),
+                    "keyword": keyword,
+                }
                 mark_seen(job_id)
                 sent += 1
                 print(f"✅ Sent: {entry.get('title', '')[:50]}")
@@ -292,6 +440,9 @@ def check_feeds():
     print(f"Found {len(pending)} relevant jobs, sending in batches of {BATCH_SIZE}")
     return send_in_batches(pending)
 
+# ============================================================
+# MAIN
+# ============================================================
 def main():
     if "--test" in sys.argv:
         print("Sending test Telegram message...")
@@ -305,12 +456,17 @@ def main():
 
     print("🚀 Jason Jober is starting...")
     init_db()
+    ensure_sheet_headers()
+
+    sheets_status = "✅ Google Sheets connected" if (GOOGLE_CREDENTIALS_JSON and GOOGLE_SHEET_ID) else "⚠️ Google Sheets not configured"
 
     send_telegram(
         "🤖 <b>Jason Jober is online!</b>\n\n"
         "Monitoring jobs on RemoteOK, WeWorkRemotely, Jobicy & Remotive...\n\n"
         "🔍 Categories: Writing, Data Entry, Spreadsheets, Python, Translation\n"
-        "📦 Jobs sent in batches of 5 — press Next to load more."
+        "📦 Jobs sent in batches of 5 — press Next to load more.\n"
+        f"📊 {sheets_status}\n\n"
+        "<i>Reply <b>take</b> to any job to log it to Google Sheets</i>"
     )
     print("✅ Jason Jober is running!")
 
@@ -319,7 +475,7 @@ def main():
         new_jobs = check_feeds()
         print(f"📊 Found {new_jobs} new relevant jobs")
         print(f"💤 Sleeping for {CHECK_INTERVAL // 60} minutes...")
-        time.sleep(CHECK_INTERVAL)
+        sleep_with_polling(CHECK_INTERVAL)
 
 if __name__ == "__main__":
     main()
