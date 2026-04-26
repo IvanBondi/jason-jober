@@ -29,22 +29,28 @@ CONFIRM_TIMEOUT = 1800  # 30 min to press "Next" before skipping
 
 # Specific phrases matched against job TITLE only (avoids noise from descriptions)
 KEYWORDS = [
-    # Writing
+    # Writing (broad)
+    "writer", "writing", "content",
+    "copywriter", "copywriting",
     "article writer", "article writing",
     "blog post",
     "content writer", "content writing",
     "technical writer", "technical writing",
     # Data work
     "data entry",
+    "researcher",
     "web research",
-    "web scraping",
+    "web scraping", "scraping",
     # Spreadsheets
+    "spreadsheet",
     "excel spreadsheet",
     "google sheets",
     # Python / automation
-    "python automation",
-    # Translation (freelance tasks only, no localization/full-time roles)
-    "translation",
+    "python", "python automation",
+    # Translation
+    "translator", "translation",
+    # Catch-all freelance signal
+    "remote freelance",
 ]
 
 MIN_BUDGET = 20
@@ -186,20 +192,16 @@ def log_to_sheets(job_data):
         return False
 
 # ============================================================
-# FILTERING — title + freelance signal check
+# FILTERING — title match + full-time exclusion on title+summary
 # ============================================================
-EXCLUDE_TERMS = [
-    "full-time", "full time", "fulltime",
-    "salary", "annual salary", "per year", "per annum",
-    "benefits", "health insurance", "401k", "pto",
-    "employee", "employment", "permanent position",
-]
 
-FREELANCE_SIGNALS = [
-    "freelance", "contract", "project",
-    "per article", "per post", "per piece",
-    "one-time", "one time", "short-term", "short term",
-    "gig", "task",
+# Unambiguous full-time employment phrases — reject on any match
+EXCLUDE_TERMS = [
+    "full-time employee",
+    "annual salary",
+    "health benefits",
+    "401k",
+    "equity",
 ]
 
 def extract_budget(text):
@@ -221,23 +223,18 @@ def matches_keywords(title):
             return keyword
     return None
 
-def is_freelance(title, summary):
-    """Return True only if job looks like a freelance/contract project."""
+def is_not_fulltime(title, summary):
     text = (title + " " + (summary or "")).lower()
-    # Reject if full-time signals present
-    if any(term in text for term in EXCLUDE_TERMS):
-        return False
-    # Accept if at least one freelance signal present
-    return any(signal in text for signal in FREELANCE_SIGNALS)
+    return not any(term in text for term in EXCLUDE_TERMS)
 
 def is_relevant(entry, source):
     title = entry.get("title", "")
-    matched_keyword = matches_keywords(title)  # title only — avoids false positives
+    matched_keyword = matches_keywords(title)  # title only
     if not matched_keyword:
         return False, None, None
 
     summary = entry.get("summary", "")
-    if not is_freelance(title, summary):
+    if not is_not_fulltime(title, summary):
         return False, None, None
 
     budget = extract_budget(summary)
