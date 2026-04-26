@@ -186,8 +186,22 @@ def log_to_sheets(job_data):
         return False
 
 # ============================================================
-# FILTERING — title only
+# FILTERING — title + freelance signal check
 # ============================================================
+EXCLUDE_TERMS = [
+    "full-time", "full time", "fulltime",
+    "salary", "annual salary", "per year", "per annum",
+    "benefits", "health insurance", "401k", "pto",
+    "employee", "employment", "permanent position",
+]
+
+FREELANCE_SIGNALS = [
+    "freelance", "contract", "project",
+    "per article", "per post", "per piece",
+    "one-time", "one time", "short-term", "short term",
+    "gig", "task",
+]
+
 def extract_budget(text):
     patterns = [
         r'\$(\d+(?:,\d+)?(?:\.\d+)?)',
@@ -207,13 +221,26 @@ def matches_keywords(title):
             return keyword
     return None
 
+def is_freelance(title, summary):
+    """Return True only if job looks like a freelance/contract project."""
+    text = (title + " " + (summary or "")).lower()
+    # Reject if full-time signals present
+    if any(term in text for term in EXCLUDE_TERMS):
+        return False
+    # Accept if at least one freelance signal present
+    return any(signal in text for signal in FREELANCE_SIGNALS)
+
 def is_relevant(entry, source):
     title = entry.get("title", "")
     matched_keyword = matches_keywords(title)  # title only — avoids false positives
     if not matched_keyword:
         return False, None, None
 
-    budget = extract_budget(entry.get("summary", ""))
+    summary = entry.get("summary", "")
+    if not is_freelance(title, summary):
+        return False, None, None
+
+    budget = extract_budget(summary)
     if budget and budget < MIN_BUDGET:
         return False, None, None
 
