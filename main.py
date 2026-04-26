@@ -29,14 +29,16 @@ CONFIRM_TIMEOUT = 1800  # 30 min to press "Next" before skipping
 
 # Specific phrases matched against job TITLE only (avoids noise from descriptions)
 KEYWORDS = [
-    "writer", "writing", "content",
+    "freelance writer",
+    "content writer needed",
+    "article writing",
+    "blog post writer",
     "data entry",
-    "research",
-    "translation",
-    "excel",
-    "python",
-    "scraping",
-    "spreadsheet",
+    "web research",
+    "translation needed",
+    "excel task",
+    "python script",
+    "web scraping task",
 ]
 
 MIN_BUDGET = 20
@@ -198,8 +200,10 @@ def extract_budget(text):
 
 def matches_keywords(title):
     title_lower = (title or "").lower()
+    if "freelance" not in title_lower:
+        return None
     for keyword in KEYWORDS:
-        if keyword.lower() in title_lower:
+        if keyword in title_lower:
             return keyword
     return None
 
