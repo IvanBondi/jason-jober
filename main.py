@@ -36,6 +36,7 @@ KEYWORDS = [
     "excel",
     "python",
     "scraping",
+    "spreadsheet",
 ]
 
 MIN_BUDGET = 20
