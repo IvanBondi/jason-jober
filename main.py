@@ -62,10 +62,6 @@ RSS_FEEDS = {
     "WeWorkRemotely": [
         "https://weworkremotely.com/remote-jobs.rss",
     ],
-    "Remotive": [
-        "https://remotive.com/remote-jobs/feed",
-        "https://remotive.com/remote-jobs/feed/writing",
-    ],
     "HubstaffTalent": [
         "https://talent.hubstaff.com/feeds/jobs.rss",
     ],
@@ -554,9 +550,17 @@ def format_job_message(entry, source, keyword, budget):
         f"<i>Reply <b>take</b> to log this job to Google Sheets</i>"
     )
 
+def _title_key(title, source):
+    """Stable dedup key: normalised title + source, stored in seen_jobs."""
+    normalised = re.sub(r'\s+', ' ', (title or "").lower().strip())
+    return f"title:{source}:{normalised}"
+
 def collect_relevant_jobs():
     """Fetch all feeds and return list of (entry, source, keyword, budget, job_id)."""
     pending = []
+    # Track title+source seen THIS cycle so the same job in multiple feeds isn't queued twice
+    cycle_titles = set()
+
     for source, feeds in RSS_FEEDS.items():
         for feed_url in feeds:
             try:
@@ -571,13 +575,19 @@ def collect_relevant_jobs():
                     print(f"    RAW: {title}")
                     if not job_id or is_seen(job_id):
                         continue
+                    tkey = _title_key(title, source)
+                    if tkey in cycle_titles or is_seen(tkey):
+                        mark_seen(job_id)
+                        continue
                     relevant, keyword, budget = is_relevant(entry, source)
                     if relevant:
                         print(f"    >>> MATCH [{keyword}]: {title}")
                         pending.append((entry, source, keyword, budget, job_id))
+                        cycle_titles.add(tkey)
                         matched += 1
                     else:
                         mark_seen(job_id)
+                        mark_seen(tkey)
                 print(f"  [{source}] {matched} new matches")
             except Exception as e:
                 print(f"  [{source}] ERROR: {e}")
@@ -603,6 +613,7 @@ def send_in_batches(pending):
                     "keyword": keyword,
                 }
                 mark_seen(job_id)
+                mark_seen(_title_key(entry.get("title", ""), source))
                 sent += 1
                 print(f"✅ Sent: {entry.get('title', '')[:50]}")
                 time.sleep(0.5)
