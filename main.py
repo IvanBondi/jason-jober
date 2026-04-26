@@ -21,7 +21,8 @@ except ImportError:
 TELEGRAM_TOKEN = os.environ.get("TELEGRAM_TOKEN", "YOUR_TOKEN")
 CHAT_ID = os.environ.get("CHAT_ID", "YOUR_CHAT_ID")
 GOOGLE_CREDENTIALS_JSON = os.environ.get("GOOGLE_CREDENTIALS_JSON")
-GOOGLE_SHEET_ID = os.environ.get("GOOGLE_SHEET_ID")
+GOOGLE_SHEET_ID = os.environ.get("GOOGLE_SHEET_ID", "1HO22ANItDntqzK4oM2bQAQHsAk0qUITxP-ND1wJqhic")
+_CREDENTIALS_FILE = os.path.join(os.path.dirname(__file__), "lucky-wonder-494514-b0-a80366374894.json")
 CHECK_INTERVAL = 300  # 5 minutes
 BATCH_SIZE = 5
 CONFIRM_TIMEOUT = 1800  # 30 min to press "Next" before skipping
@@ -116,26 +117,38 @@ def mark_seen_bulk(job_ids):
 # ============================================================
 SHEET_HEADERS = ["Date", "Platform", "Job Title", "Budget", "Status", "Link"]
 
+def _load_credentials():
+    """Load service account credentials from file if present, else from env var."""
+    if os.path.exists(_CREDENTIALS_FILE):
+        with open(_CREDENTIALS_FILE) as f:
+            return json.load(f)
+    if GOOGLE_CREDENTIALS_JSON:
+        return json.loads(GOOGLE_CREDENTIALS_JSON)
+    raise RuntimeError("No Google credentials found (set GOOGLE_CREDENTIALS_JSON or place the service account file in the project directory)")
+
 def _sheets_service():
     creds = service_account.Credentials.from_service_account_info(
-        json.loads(GOOGLE_CREDENTIALS_JSON),
+        _load_credentials(),
         scopes=["https://www.googleapis.com/auth/spreadsheets"],
     )
     return gapi_build("sheets", "v4", credentials=creds)
 
+def _sheets_configured():
+    return SHEETS_AVAILABLE and (os.path.exists(_CREDENTIALS_FILE) or GOOGLE_CREDENTIALS_JSON) and GOOGLE_SHEET_ID
+
 def ensure_sheet_headers():
-    if not SHEETS_AVAILABLE or not GOOGLE_CREDENTIALS_JSON or not GOOGLE_SHEET_ID:
+    if not _sheets_configured():
         return
     try:
         svc = _sheets_service()
         result = svc.spreadsheets().values().get(
             spreadsheetId=GOOGLE_SHEET_ID,
-            range="Sheet1!A1:F1",
+            range="Аркуш1!A1:F1",
         ).execute()
         if not result.get("values"):
             svc.spreadsheets().values().update(
                 spreadsheetId=GOOGLE_SHEET_ID,
-                range="Sheet1!A1:F1",
+                range="Аркуш1!A1:F1",
                 valueInputOption="USER_ENTERED",
                 body={"values": [SHEET_HEADERS]},
             ).execute()
@@ -144,11 +157,8 @@ def ensure_sheet_headers():
         print(f"Sheets header error: {e}")
 
 def log_to_sheets(job_data):
-    if not SHEETS_AVAILABLE:
-        print("Google API libraries not installed")
-        return False
-    if not GOOGLE_CREDENTIALS_JSON or not GOOGLE_SHEET_ID:
-        print("GOOGLE_CREDENTIALS_JSON or GOOGLE_SHEET_ID not set")
+    if not _sheets_configured():
+        print("Google Sheets not configured")
         return False
     try:
         svc = _sheets_service()
@@ -162,7 +172,7 @@ def log_to_sheets(job_data):
         ]
         svc.spreadsheets().values().append(
             spreadsheetId=GOOGLE_SHEET_ID,
-            range="Sheet1!A:F",
+            range="Аркуш1!A:F",
             valueInputOption="USER_ENTERED",
             body={"values": [row]},
         ).execute()
@@ -458,7 +468,7 @@ def main():
     init_db()
     ensure_sheet_headers()
 
-    sheets_status = "✅ Google Sheets connected" if (GOOGLE_CREDENTIALS_JSON and GOOGLE_SHEET_ID) else "⚠️ Google Sheets not configured"
+    sheets_status = "✅ Google Sheets connected" if _sheets_configured() else "⚠️ Google Sheets not configured"
 
     send_telegram(
         "🤖 <b>Jason Jober is online!</b>\n\n"
