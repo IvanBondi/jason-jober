@@ -205,6 +205,7 @@ def is_relevant(entry, source):
     if not matched_keyword:
         return False, None, None
 
+    summary = entry.get("summary", "")
     budget = extract_budget(summary)
     if budget and budget < MIN_BUDGET:
         return False, None, None
