@@ -35,18 +35,23 @@ CHECK_INTERVAL = 300  # 5 minutes
 BATCH_SIZE = 5
 CONFIRM_TIMEOUT = 1800  # 30 min to press "Next" before skipping
 
-# Specific phrases matched against job TITLE only (avoids noise from descriptions)
+# Keywords matched against title OR summary
 KEYWORDS = [
     "freelance writer",
-    "content writer needed",
+    "content writer",
     "article writing",
-    "blog post writer",
+    "blog post",
+    "blog writer",
+    "copywriter",
     "data entry",
     "web research",
-    "translation needed",
-    "excel task",
+    "online research",
+    "translation",
+    "excel",
+    "spreadsheet",
     "python script",
-    "web scraping task",
+    "web scraping",
+    "data scraping",
 ]
 
 MIN_BUDGET = 20
@@ -91,6 +96,9 @@ def init_db():
             seen_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP
         )
     """)
+    if os.environ.get("RESET_DB") == "1":
+        c.execute("DELETE FROM seen_jobs")
+        print("🗑️ seen_jobs cleared (RESET_DB=1)")
     conn.commit()
     conn.close()
 
@@ -355,7 +363,7 @@ def check_gmail():
         return []
 
 # ============================================================
-# FILTERING — title keyword match only, no exclusions
+# FILTERING — keywords matched in title OR summary
 # ============================================================
 def extract_budget(text):
     patterns = [
@@ -369,22 +377,20 @@ def extract_budget(text):
             return float(match.group(1).replace(',', ''))
     return None
 
-def matches_keywords(title):
-    title_lower = (title or "").lower()
-    if "freelance" not in title_lower:
-        return None
+def matches_keywords(title, summary=""):
+    combined = ((title or "") + " " + (summary or "")).lower()
     for keyword in KEYWORDS:
-        if keyword in title_lower:
+        if keyword in combined:
             return keyword
     return None
 
 def is_relevant(entry, source):
     title = entry.get("title", "")
-    matched_keyword = matches_keywords(title)
+    summary = entry.get("summary", "")
+    matched_keyword = matches_keywords(title, summary)
     if not matched_keyword:
         return False, None, None
 
-    summary = entry.get("summary", "")
     budget = extract_budget(summary)
     if budget and budget < MIN_BUDGET:
         return False, None, None
