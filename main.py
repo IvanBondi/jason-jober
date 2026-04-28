@@ -56,6 +56,28 @@ KEYWORDS = [
 
 MIN_BUDGET = 20
 
+# Jobs permanently blacklisted by URL substring or exact title
+BLACKLISTED_URLS = [
+    "prowritersites.com",
+]
+BLACKLISTED_TITLES = [
+    "ProWriterSites: Freelance Writer",
+]
+
+# Words in title/summary that indicate a full-time salaried position — skip these
+FULLTIME_SIGNALS = [
+    "headquarters",
+    "salary",
+    "full-time employee",
+    "full time employee",
+    "benefits package",
+    "paid time off",
+    "health insurance",
+    "401(k)",
+    "equity",
+    "stock options",
+]
+
 # Live RSS feeds verified 2026-04-26 — dead feeds removed
 RSS_FEEDS = {
     "RemoteOK": [
@@ -386,7 +408,20 @@ def matches_keywords(title, summary=""):
 
 def is_relevant(entry, source):
     title = entry.get("title", "")
+    link = entry.get("link", "")
     summary = entry.get("summary", "")
+
+    # Permanent blacklist
+    if any(bl in link for bl in BLACKLISTED_URLS):
+        return False, None, None
+    if title.strip() in BLACKLISTED_TITLES:
+        return False, None, None
+
+    # Skip full-time salaried positions
+    combined_lower = (title + " " + summary).lower()
+    if any(sig in combined_lower for sig in FULLTIME_SIGNALS):
+        return False, None, None
+
     matched_keyword = matches_keywords(title, summary)
     if not matched_keyword:
         return False, None, None
