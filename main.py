@@ -78,7 +78,8 @@ FULLTIME_SIGNALS = [
     "stock options",
 ]
 
-# Live RSS feeds verified 2026-04-26 — dead feeds removed
+# Live RSS feeds verified 2026-04-28
+# Guru, ServiceScape, WorkHoppers, FlexJobs, SolidGigs, Upwork have no public RSS.
 RSS_FEEDS = {
     "RemoteOK": [
         "https://remoteok.com/remote-jobs.rss",
@@ -94,6 +95,13 @@ RSS_FEEDS = {
     ],
     "Jobicy": [
         "https://jobicy.com/?feed=job_feed",
+        "https://jobicy.com/?feed=job_feed&job_types=contract",
+        "https://jobicy.com/?feed=job_feed&job_types=part-time",
+    ],
+    # Remotive tags each entry with <type>freelance|contract|part_time|full_time</type>
+    # full_time entries are filtered out in is_relevant().
+    "Remotive": [
+        "https://remotive.com/remote-jobs/feed",
     ],
 }
 
@@ -415,6 +423,11 @@ def is_relevant(entry, source):
     if any(bl in link for bl in BLACKLISTED_URLS):
         return False, None, None
     if title.strip() in BLACKLISTED_TITLES:
+        return False, None, None
+
+    # Remotive tags entries with <type>; skip full_time entries
+    entry_type = entry.get("type", "")
+    if entry_type == "full_time":
         return False, None, None
 
     # Skip full-time salaried positions
