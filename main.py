@@ -37,21 +37,47 @@ CONFIRM_TIMEOUT = 1800  # 30 min to press "Next" before skipping
 
 # Keywords matched against title OR summary
 KEYWORDS = [
+    # Writing / content
     "freelance writer",
     "content writer",
     "article writing",
     "blog post",
     "blog writer",
     "copywriter",
+    # Data / research
     "data entry",
     "web research",
     "online research",
-    "translation",
     "excel",
     "spreadsheet",
     "python script",
     "web scraping",
     "data scraping",
+    # Translation
+    "translation",
+    # QA / testing
+    "qa tester",
+    "qa testing",
+    "quality assurance",
+    "manual testing",
+    "software testing",
+    "test cases",
+    # Transcription
+    "transcription",
+    "transcribe",
+    "audio transcription",
+    # Data annotation / labeling
+    "data annotation",
+    "data labeling",
+    "image labeling",
+    "image annotation",
+    "annotation task",
+    # Content moderation
+    "content moderation",
+    "content moderator",
+    # Form filling
+    "form filling",
+    "form entry",
 ]
 
 MIN_BUDGET = 20
@@ -725,7 +751,7 @@ def main():
     send_telegram(
         "🤖 <b>Jason Jober is online!</b>\n\n"
         "Monitoring RSS feeds + Gmail Upwork_Jobs label...\n\n"
-        "🔍 Categories: Writing, Data Entry, Spreadsheets, Python, Translation\n"
+        "🔍 Categories: Writing, Data Entry, Translation, QA Testing, Transcription, Annotation, Moderation\n"
         "📦 Jobs sent in batches of 5 — press Next to load more.\n"
         f"📊 {sheets_status}\n"
         f"📧 {gmail_status}\n\n"
