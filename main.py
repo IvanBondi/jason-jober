@@ -8,6 +8,8 @@ import re
 import json
 from datetime import datetime
 
+from security import sanitize_entry, check_message
+
 try:
     from google.oauth2 import service_account
     from google.oauth2.credentials import Credentials
@@ -408,11 +410,11 @@ def check_gmail():
                 if is_seen(job_url_id):
                     continue
                 # Build a fake entry dict matching format_job_message expectations
-                entry = {
+                entry = sanitize_entry({
                     "title": job["title"],
                     "link":  job["link"],
                     "summary": job["description"],
-                }
+                })
                 pending.append((entry, "Upwork", job["title"], job["budget"], job_url_id))
 
             # Mark email as read
@@ -586,8 +588,14 @@ def process_updates(updates):
             answer_callback(cb["id"])
 
         msg = update.get("message", {})
-        if msg and msg.get("text", "").strip().lower() == "take":
-            handle_take(msg)
+        if msg:
+            from_user = msg.get("from", {})
+            user_id = from_user.get("id", 0)
+            text = msg.get("text", "")
+            if not check_message(user_id, text):
+                continue
+            if text.strip().lower() == "take":
+                handle_take(msg)
 
     return callbacks_seen
 
@@ -660,6 +668,7 @@ def collect_relevant_jobs():
                 print(f"  [{source}] {len(feed.entries)} entries from {feed_url}")
                 matched = 0
                 for entry in feed.entries:
+                    sanitize_entry(entry)
                     title = entry.get("title", "(no title)")
                     job_id = entry.get("id") or entry.get("link", "")
                     print(f"    RAW: {title}")
