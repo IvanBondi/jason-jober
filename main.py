@@ -278,11 +278,14 @@ def _gmail_creds():
         return None
     creds = Credentials.from_authorized_user_info(raw, GMAIL_SCOPES)
     if creds.expired and creds.refresh_token:
-        creds.refresh(GoogleRequest())
-        # Persist refreshed token locally if file exists
-        if os.path.exists(_GMAIL_TOKEN_FILE):
-            with open(_GMAIL_TOKEN_FILE, "w") as f:
-                f.write(creds.to_json())
+        try:
+            creds.refresh(GoogleRequest())
+            if os.path.exists(_GMAIL_TOKEN_FILE):
+                with open(_GMAIL_TOKEN_FILE, "w") as f:
+                    f.write(creds.to_json())
+        except Exception as e:
+            print(f"  [Gmail] token refresh failed ({e}) — Gmail disabled")
+            return None
     return creds
 
 def _gmail_service():
@@ -766,7 +769,8 @@ def main():
 
     sheets_status = "✅ Google Sheets connected" if _sheets_configured() else "⚠️ Google Sheets not configured"
 
-    gmail_status = "✅ Gmail connected" if (os.path.exists(_GMAIL_TOKEN_FILE) or GMAIL_TOKEN_JSON) else "⚠️ Gmail not configured"
+    gmail_ok = GOOGLE_AVAILABLE and (_gmail_creds() is not None)
+    gmail_status = "✅ Gmail connected" if gmail_ok else "⚠️ Gmail disabled (token expired or not configured)"
     send_telegram(
         "🤖 <b>Jason Jober is online!</b>\n\n"
         "Monitoring RSS feeds + Gmail Upwork_Jobs label...\n\n"
